@@ -15,7 +15,7 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Libraries & directories
 
-# Read in data files
+# Set directory paths
 path = "C:/Users/fallo/OneDrive/Documents/Pete/R-files"
 input_path = paste(path, "/input", sep="")
 output_path = paste(path, "/R_output", sep="")
@@ -25,6 +25,7 @@ setwd(path)
 library(lubridate)
 library(tidyverse)
 library(scales)
+library(janitor)
 library(rvest)    # Reading tables from a web page
 
 
@@ -44,7 +45,7 @@ wiki_table_no = c(rep(1, length(seasons)))
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Functions 
-make_graph = function(team_abbrev) {
+make_graph_bbl = function(team_abbrev) {
   data_for_graph = bbl_tables %>% 
     filter(abbrev == team_abbrev)
   
@@ -54,6 +55,7 @@ make_graph = function(team_abbrev) {
   min_yr = min(data_for_graph$yr_end)
   max_yr = max(data_for_graph$yr_end)
   discont_yr = 2099
+  league_name = "BBL"
   
   #Breaks for background rectangles, other formatting
   x_intercepts = data_for_graph$yr_end[(data_for_graph$yr_end %% 5) == 0]
@@ -74,7 +76,7 @@ make_graph = function(team_abbrev) {
     theme(panel.border = element_rect(fill=NA)) +
     
     # titles
-    ggtitle(paste("BBL Performance of", data_for_graph$current_name[1], "from", start_yr, "to", end_yr)) + 
+    ggtitle(paste("Position of", data_for_graph$current_name[1], "in", league_name, "from", start_yr, "to", end_yr)) + 
     theme(plot.title = element_text(lineheight=1.0, face="bold", hjust = 0.5)) +
     labs(x="Year", y="Position") +
     theme(axis.title = element_text(face = "bold")) +
@@ -93,12 +95,8 @@ make_graph = function(team_abbrev) {
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# Read in input files
-setwd(input_path)
-bbl_teams = read_csv("bbl_teams.csv")
-
+# Read in external data
 # read all final league tables in one loop
-# Note: format of points table changed in season 10
 tables = list()
 
 for (j in 1:length(seasons)) {
@@ -122,7 +120,7 @@ for (j in 1:9) {
   header_fmt1 = colnames(tables[[j]])
   headers_all = rbind(header_fmt1, headers_all)
 }
-for (j in 10:11) {
+for (j in 10:11) {                                 # exception - seasons with bonus points in table
   header_fmt2 = colnames(tables[[j]])
   headers_all = rbind(header_fmt2, headers_all)
 }
@@ -136,7 +134,7 @@ for (j in 1:length(seasons)) {
   colnames(tables[[j]]) = header_fmt1
 }
 for (j in 10:11) {
-  colnames(tables[[j]]) = header_fmt2              # exception - seasons with bonus points
+  colnames(tables[[j]]) = header_fmt2              
 }
 
 # convert from list to data frame
@@ -151,24 +149,48 @@ tables_all = rbind(tables_all_fmt1_adj, tables_all_fmt2) %>%
   arrange(season_no, Pos)
 
 
+# read in premiers & runners-up
+table_premiers_clean = read_html("https://en.wikipedia.org/wiki/Big_Bash_League") %>%
+  html_nodes(".wikitable") %>%
+  html_table(fill = TRUE)
+
+table_other = table_premiers_clean[[2]] %>%
+  row_to_names(1) %>%
+  rename("Runners_up" = "Runner-up") %>%
+  mutate(Season = paste(substr(Season, 1, 4), "-", substr(Season, 6, 7), sep=""),
+         Winner = sub("\\d+.*", "", Winner),
+         Runners_up = sub("\\d+.*", "", Runners_up)) %>%
+  select(c(Season:Winner, "Runners_up")) %>%
+  filter(Season %in% seasons)
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Read in input files
+setwd(input_path)
+bbl_teams = read_csv("bbl_teams.csv")
+
+
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Select relevant data, and then data manipulations
 bbl_tables = tables_all %>% 
   mutate(Team = str_replace(Team, "\\[.*\\]", ""),            # remove text inside square brackets
-         max_avail_pts = ifelse(season_no <=9, Pld * 2, Pld * 4),
-         pts_achieved_perc = Pts / max_avail_pts,
          champion = ifelse(substr(Team, nchar(Team) - 2, nchar(Team)) == "(C)", 1, 0),
-         runnersup = ifelse(substr(Team, nchar(Team) - 3, nchar(Team)) == "(RU)", 1, 0),
+         runners_up = ifelse(substr(Team, nchar(Team) - 3, nchar(Team)) == "(RU)", 1, 0),
          premiers = ifelse(Pos == 1, 1, 0),
+         grand_finalist = champion + runners_up,
          finals = ifelse(season_no <= 8, ifelse(Pos <= 4, 1, 0), ifelse(Pos <= 5, 1, 0)),
-         pts_deducted = ifelse(season_no <=9, Pts - (2 * W + NR), Pts - (3 * W + 2 * NR + BP)),
+         pts_per_win = ifelse(season_no %in% c(10,11), 3, 2),
+         pts_per_draw = ifelse(season_no %in% c(10,11), 2, 1),
+         max_avail_pts = Pld * ifelse(season_no %in% c(10,11), (pts_per_win + 1), pts_per_win),
+         pts_achieved_perc = Pts / max_avail_pts,
+         pts_deducted = Pts - (pts_per_win * W + pts_per_draw * NR + BP),
          NRR_value = ifelse(nchar(NRR) == 6, as.numeric(substr(NRR,2,6)) * -1, as.numeric(NRR)),
          yr_end = as.numeric(substr(season, 1, 4)) + 1) %>%
   group_by(season) %>%
   mutate(count_teams = n(),
          wooden_spoon = ifelse(Pos == max(Pos), 1, 0)) %>%
   ungroup() %>%
-  select(Pos:finals, count_teams:wooden_spoon, pts_deducted:yr_end)
+  select(Pos:finals, count_teams:wooden_spoon, pts_per_win:yr_end)
 
 bbl_tables$Team = gsub(" \\s*\\([^\\)]+\\)","",as.character(bbl_tables$Team)) # to get consistency in team name
 
@@ -186,25 +208,38 @@ bbl_tables_all = left_join(bbl_tables, teams_all, by = c("Team" = "original_name
 # Add additional information of previous season's finishing position
 bbl_tables = bbl_tables_all %>%
   arrange(current_name, season_no) %>%
-  mutate(prev_pos = ifelse(current_name == lag(current_name), lag(Pos), NA)) %>%
+  left_join(table_other, by = c("season" = "Season")) %>%
+  mutate(runners_up = ifelse(current_name == Runners_up, 1, 0),
+         gf_years = 1,
+         grand_finalist = (premiers + runners_up) * gf_years,
+         prev_pos = ifelse(current_name == lag(current_name), lag(Pos), NA)) %>%
   mutate(next_pos = ifelse(current_name == lead(current_name), lead(Pos), NA)) %>%
   arrange(season_no, Pos) %>%
   mutate(pos_diff = ifelse(is.na(prev_pos), NA, -(Pos - prev_pos)),
          pos_abs_diff = abs(pos_diff)) %>%
   group_by(current_name) %>%
   mutate(cum_champions = cumsum(champion),
+         streak_champion = c(ave(c(0, champion), cumsum(c(0, champion) == 0), FUN = seq_along) - 1)[-1],
+         streak_missed_champion = c(ave(c(0, champion), cumsum(c(0, champion) > 0), FUN = seq_along) - 1)[-1],
+         cum_runners_up = cumsum(runners_up),
+         streak_runners_up = c(ave(c(0, runners_up), cumsum(c(0, runners_up) == 0), FUN = seq_along) - 1)[-1],
          cum_premiers = cumsum(premiers),
+         streak_premiers = c(ave(c(0, premiers), cumsum(c(0, premiers) == 0), FUN = seq_along) - 1)[-1],
+         streak_missed_premiers = c(ave(c(0, premiers), cumsum(c(0, premiers) > 0), FUN = seq_along) - 1)[-1],
          cum_finals = cumsum(finals),
          streak_finals = c(ave(c(0, finals), cumsum(c(0, finals) == 0), FUN = seq_along) - 1)[-1],
-         streak_missed_finals = c(ave(c(0, finals), cumsum(c(0, finals) > 0), FUN = seq_along) - 1)[-1]) %>%
-  ungroup()
+         streak_missed_finals = c(ave(c(0, finals), cumsum(c(0, finals) > 0), FUN = seq_along) - 1)[-1],
+         cum_grand_finals = cumsum(grand_finalist),
+         streak_grand_finals = c(ave(c(0, grand_finalist), cumsum(c(0, grand_finalist) == 0), FUN = seq_along) - 1)[-1],
+         streak_missed_grand_finals = c(ave(c(0, grand_finalist), cumsum(c(0, grand_finalist) > 0), FUN = seq_along) - 1)[-1]) %>%
+  ungroup() %>%
+  mutate(row_number = row_number())
 
-rm("bbl_tables_all")
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Analysis of Big Bash League tables data
-# Make all-time league table
-bbl_all_time = group_by(bbl_tables, current_name) %>%
+# Make all-time points table
+bbl_all_time_points_table = group_by(bbl_tables, current_name) %>%
   summarise(count = n(),
             Total_Pld = sum(Pld),
             Total_W = sum(W),
@@ -215,7 +250,7 @@ bbl_all_time = group_by(bbl_tables, current_name) %>%
             win_perc = round(Total_W / (Total_W + Total_L) * 100, 2),
             result_perc = round((Total_W + 0.5 * Total_NR) / Total_Pld * 100, 2),
             count_champions = sum(champion),
-            count_runnersup = sum(runnersup),
+            count_runners_up = sum(runners_up),
             count_premiers = sum(premiers),
             count_finals = sum(finals),
             count_1st = sum(Pos == 1),
@@ -223,9 +258,10 @@ bbl_all_time = group_by(bbl_tables, current_name) %>%
             count_3rd = sum(Pos == 3),
             best = min(Pos), 
             count_spoon = sum(wooden_spoon),
+            count_gf = sum(grand_finalist),
             first_season = min(season),
             last_season = max(season)) %>%
-  arrange(desc(win_perc), desc(count_champions), desc(count_runnersup))
+  arrange(desc(win_perc), desc(count_champions), desc(count_runners_up))
 
 # champions by final position
 champions = filter(bbl_tables, champion == 1)
@@ -249,6 +285,20 @@ title_race_totals = group_by(bbl_tables, season, yr_end) %>%
             Total_NRR_2 = sum(NRR_value[Pos == 2])) %>%
   mutate(margin_pts = Total_Pts_1 - Total_Pts_2,
          margin_NRR = Total_NRR_1 - Total_NRR_2)
+
+# totals by club
+team_streaks = group_by(bbl_tables, current_name) %>%
+  summarise(count = n(),
+            max_streak_champion = max(streak_champion),
+            max_streak_missed_champion = max(streak_missed_champion),
+            max_streak_runners_up = max(streak_runners_up),
+            streak_premiers = max(streak_premiers),
+            max_streak_missed_premiers = max(streak_missed_premiers),
+            max_streak_finals = max(streak_finals),
+            max_streak_missed_finals = max(streak_missed_finals),
+            max_streak_grand_finals = max(streak_grand_finals),
+            max_streak_missed_grand_finals = max(streak_missed_grand_finals)) %>%
+  arrange(current_name)
 
 # Records for a single season
 # most & least points - not adjusted for no. of games or points system
@@ -361,6 +411,26 @@ pos_changes
 
 
 # Longest streaks
+longest_streaks_champion = arrange(bbl_tables, desc(streak_champion)) %>%
+  select(season, Team, streak_champion)
+head(longest_streaks_champion, 5)
+
+longest_streaks_missed_champion = arrange(bbl_tables, desc(streak_missed_champion)) %>%
+  select(season, Team, streak_missed_champion)
+head(longest_streaks_missed_champion, 5)
+
+longest_streaks_runners_up = arrange(bbl_tables, desc(streak_runners_up)) %>%
+  select(season, Team, streak_runners_up)
+head(longest_streaks_runners_up, 5)
+
+longest_streaks_premiers = arrange(bbl_tables, desc(streak_premiers)) %>%
+  select(season, Team, streak_premiers)
+head(longest_streaks_premiers, 5)
+
+longest_streaks_missed_premiers = arrange(bbl_tables, desc(streak_missed_premiers)) %>%
+  select(season, Team, streak_missed_premiers)
+head(longest_streaks_missed_premiers, 5)
+
 longest_streaks_finals = arrange(bbl_tables, desc(streak_finals)) %>%
   select(season, Team, streak_finals)
 head(longest_streaks_finals, 5)
@@ -368,6 +438,14 @@ head(longest_streaks_finals, 5)
 longest_streaks_missed_finals = arrange(bbl_tables, desc(streak_missed_finals)) %>%
   select(season, Team, streak_missed_finals)
 head(longest_streaks_missed_finals, 5)
+
+longest_streaks_grand_finals = arrange(bbl_tables, desc(streak_grand_finals)) %>%
+  select(season, Team, streak_grand_finals)
+head(longest_streaks_grand_finals, 5)
+
+longest_streaks_missed_grand_finals = arrange(bbl_tables, desc(streak_missed_grand_finals)) %>%
+  select(season, Team, streak_missed_grand_finals)
+head(longest_streaks_missed_grand_finals, 5)
 
 
 # no. of teams in finals
@@ -382,10 +460,8 @@ teams_unique = unique(bbl_tables$abbrev)
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # checks on data for consistency
-
-# Unable to use error_check_pts because of points for a win changed from 2 to 4
-#error_check_pts = bbl_tables %>% 
-#  filter(!Pts == (2 * W + D))
+error_check_pts = bbl_tables %>% 
+  filter(!Pts == (pts_per_win * W + pts_per_draw * NR + BP))
 
 error_check_pld = bbl_tables %>%
   filter(!Pld == (W + L + NR))
@@ -400,38 +476,49 @@ error_check_pos = group_by(bbl_tables, season) %>%
          pos_diff = sum_pos - exp_sum_pos) %>%   # error if calculated difference (pos_diff) is not zero
   filter(!(pos_diff == 0))
 
+error_sorted_pos = bbl_tables %>%
+  arrange(season_no, desc(Pts), desc(NRR_value)) %>%
+  mutate(sorted_row_number = row_number(),
+         row_no_diff = row_number - sorted_row_number) %>%
+  filter(!(row_no_diff == 0))
+
+check_identical_pos = bbl_tables %>%
+  group_by(season_no, Pts, NRR_value) %>%
+  summarise(count_seasons = n()) %>%
+  filter(count_seasons > 1)
+
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # run function to produce graph for a specific team
-make_graph("STR") 
-make_graph("HEA")
-make_graph("HUR") 
-make_graph("REN")
-make_graph("STA") 
-make_graph("SCO")
-make_graph("SIX")
-make_graph("THU")
+make_graph_bbl("STR")   # Adelaide Strikers 
+make_graph_bbl("HEA")   # Brisbane Heat
+make_graph_bbl("HUR")   # Hobart Hurricanes
+make_graph_bbl("REN")   # Melbourne Renegades
+make_graph_bbl("STA")   # Melbourne Stars
+make_graph_bbl("SCO")   # Perth Scorchers
+make_graph_bbl("SIX")   # Sydney Sixers
+make_graph_bbl("THU")   # Sydney Thunder
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # export file to csv format
-names(bbl_all_time) <- gsub(x = names(bbl_all_time), pattern = "_", replacement = " ") 
+names(bbl_all_time_points_table) <- gsub(x = names(bbl_all_time_points_table), pattern = "_", replacement = " ") 
 
 setwd(output_path)
 save(tables, file = "bbl_tables_raw.Rdata")
 save(bbl_tables, file = "bbl_tables.Rdata")
 write.csv(bbl_tables, file = "bbl_tables_full.csv")
-write.csv(bbl_all_time, file = "bbl_all_time.csv")
+write.csv(bbl_all_time_points_table, file = "bbl_all_time_points_table.csv")
 setwd(path) 
 
 # export single graph
-setwd(output_path)
-ggsave("graph_ggsave.pdf")
-setwd(path)
+#setwd(output_path)
+#ggsave("graph_ggsave.pdf")
+#setwd(path)
 
 # export multiple graphs
 for (i in 1:length(teams_unique)) {
-  make_graph(teams_unique[i])
+  make_graph_bbl(teams_unique[i])
   setwd(output_path)
 #  ggsave(paste("graph_bbl_", teams_unique[i], ".pdf", sep=""))
   ggsave(paste("performance_chart_bbl_", teams_unique[i], ".png", sep=""))
@@ -445,5 +532,17 @@ setwd(path)
 
 
 # To do:
-# Runners-up is not available in this data. Find an alternate source of runners-up data. 
 # Validate wikipedia data against another source.
+# consider different coloured point on chart for champions - take from AFL
+
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Test
+# read one league table manually
+table = read_html("https://en.wikipedia.org/wiki/Template:2023-24_Big_Bash_League_table")
+tables_all <- table %>%
+  html_nodes(".wikitable") %>%
+  html_table(fill = TRUE)
+table_yyyymm = tables_all[[1]]
+table_yyyymm
